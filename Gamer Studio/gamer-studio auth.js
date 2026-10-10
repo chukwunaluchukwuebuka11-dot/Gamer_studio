@@ -498,6 +498,202 @@ export async function markAllNotificationsRead() {
   if (error) throw error;
 }
 
+export async function getMessageContacts(searchTerm, activeUserIds) {
+  const user = await getCurrentUser();
+  const term = searchTerm.trim();
+  const onlineUserIds = [...new Set(activeUserIds)].filter((id) => id !== user.id);
+  if (!onlineUserIds.length) return [];
+
+  let profilesQuery = supabase.from('profiles')
+    .select('id, username, avatar_url')
+    .in('id', onlineUserIds);
+  if (term) profilesQuery = profilesQuery.ilike('username', `%${term}%`);
+
+  const [profilesResult, sentResult, receivedResult] = await Promise.all([
+    profilesQuery.order('username', { ascending: true }).limit(50),
+    supabase
+      .from('friend_requests')
+      .select('id, recipient_id, status')
+      .eq('requester_id', user.id)
+      .in('recipient_id', onlineUserIds),
+    supabase
+      .from('friend_requests')
+      .select('id, requester_id, status')
+      .eq('recipient_id', user.id)
+      .in('requester_id', onlineUserIds)
+  ]);
+  if (profilesResult.error) throw profilesResult.error;
+  if (sentResult.error) throw sentResult.error;
+  if (receivedResult.error) throw receivedResult.error;
+
+  const sentById = new Map(sentResult.data.map((request) => [request.recipient_id, request]));
+  const receivedById = new Map(receivedResult.data.map((request) => [request.requester_id, request]));
+  return profilesResult.data.map((profile) => {
+    const sentRequest = sentById.get(profile.id);
+    const receivedRequest = receivedById.get(profile.id);
+    const sentStatus = sentRequest?.status;
+    const receivedStatus = receivedRequest?.status;
+    const friendshipStatus = sentStatus === 'accepted' || receivedStatus === 'accepted'
+      ? 'friends'
+      : receivedStatus === 'pending'
+        ? 'request_received'
+        : sentStatus === 'pending'
+          ? 'request_sent'
+          : 'not_sent';
+    return {
+      ...profile,
+      friendshipStatus,
+      incomingRequestId: receivedStatus === 'pending' ? receivedRequest.id : null
+    };
+  });
+}
+
+export async function sendFriendRequest(gamerId) {
+  await getCurrentUser();
+  const { data, error } = await supabase.rpc('send_friend_request', {
+    p_recipient_id: gamerId
+  });
+  if (error) throw error;
+  return data.status;
+}
+
+export async function getPendingFriendRequests() {
+  const user = await getCurrentUser();
+  const { data: requests, error } = await supabase
+    .from('friend_requests')
+    .select('id, requester_id, created_at')
+    .eq('recipient_id', user.id)
+    .eq('status', 'pending')
+    .order('created_at', { ascending: false });
+  if (error) throw error;
+  if (!requests.length) return [];
+
+  const requesterIds = requests.map((request) => request.requester_id);
+  const { data: profiles, error: profilesError } = await supabase
+    .from('profiles')
+    .select('id, username, avatar_url')
+    .in('id', requesterIds);
+  if (profilesError) throw profilesError;
+
+  const profilesById = new Map(profiles.map((profile) => [profile.id, profile]));
+  return requests.map((request) => ({
+    ...request,
+    profile: profilesById.get(request.requester_id) || {
+      id: request.requester_id,
+      username: 'Gamer',
+      avatar_url: ''
+    }
+  }));
+}
+
+export async function getAcceptedFriends() {
+  const user = await getCurrentUser();
+  const { data: requests, error } = await supabase
+    .from('friend_requests')
+    .select('requester_id, recipient_id')
+    .eq('status', 'accepted')
+    .or(`requester_id.eq.${user.id},recipient_id.eq.${user.id}`);
+  if (error) throw error;
+  const friendIds = [...new Set(requests.map((request) => (
+    request.requester_id === user.id ? request.recipient_id : request.requester_id
+  )))];
+  if (!friendIds.length) return [];
+
+  const { data: profiles, error: profilesError } = await supabase
+    .from('profiles')
+    .select('id, username, avatar_url')
+    .in('id', friendIds)
+    .order('username', { ascending: true });
+  if (profilesError) throw profilesError;
+  return profiles;
+}
+
+export async function respondToFriendRequest(requestId, accept) {
+  await getCurrentUser();
+  const { data, error } = await supabase.rpc('respond_to_friend_request', {
+    p_request_id: requestId,
+    p_accept: accept
+  });
+  if (error) throw error;
+  return data.status;
+}
+
+export async function getMessageProfile(gamerId) {
+  await getCurrentUser();
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, username, avatar_url')
+    .eq('id', gamerId)
+    .single();
+  if (error) throw error;
+  return data;
+}
+
+export async function getMessageConversations() {
+  const user = await getCurrentUser();
+  const { data: messages, error } = await supabase
+    .from('direct_messages')
+    .select('id, sender_id, recipient_id, content, created_at')
+    .or(`sender_id.eq.${user.id},recipient_id.eq.${user.id}`)
+    .order('created_at', { ascending: false })
+    .limit(500);
+  if (error) throw error;
+
+  const latestByGamer = new Map();
+  for (const message of messages) {
+    const gamerId = message.sender_id === user.id ? message.recipient_id : message.sender_id;
+    if (!latestByGamer.has(gamerId)) latestByGamer.set(gamerId, message);
+  }
+  if (!latestByGamer.size) return [];
+
+  const { data: profiles, error: profilesError } = await supabase
+    .from('profiles')
+    .select('id, username, avatar_url')
+    .in('id', [...latestByGamer.keys()]);
+  if (profilesError) throw profilesError;
+
+  const profilesById = new Map(profiles.map((profile) => [profile.id, profile]));
+  return [...latestByGamer.entries()].map(([gamerId, latestMessage]) => ({
+    ...(profilesById.get(gamerId) || { id: gamerId, username: 'Gamer', avatar_url: '' }),
+    latestMessage
+  }));
+}
+
+export async function getDirectMessages(gamerId) {
+  const user = await getCurrentUser();
+  if (gamerId === user.id) throw new Error('You cannot message yourself');
+
+  const { data: messages, error } = await supabase
+    .from('direct_messages')
+    .select('id, sender_id, recipient_id, content, created_at')
+    .or(`and(sender_id.eq.${user.id},recipient_id.eq.${gamerId}),and(sender_id.eq.${gamerId},recipient_id.eq.${user.id})`)
+    .order('created_at', { ascending: false })
+    .limit(100);
+  if (error) throw error;
+
+  return messages.reverse().map((message) => ({
+    ...message,
+    isOwnMessage: message.sender_id === user.id
+  }));
+}
+
+export async function sendDirectMessage(gamerId, content) {
+  const user = await getCurrentUser();
+  const messageContent = content.trim();
+  if (gamerId === user.id) throw new Error('You cannot message yourself');
+  if (!messageContent) throw new Error('Write a message before sending');
+  if (messageContent.length > 2000) throw new Error('Messages must be 2,000 characters or fewer');
+
+  const { error } = await supabase
+    .from('direct_messages')
+    .insert({
+      sender_id: user.id,
+      recipient_id: gamerId,
+      content: messageContent
+    });
+  if (error) throw error;
+}
+
 export async function getPostComments(postId) {
   await getCurrentUser();
 

@@ -2,11 +2,20 @@ import {
   createPost,
   createPostComment,
   deletePost,
+  getDirectMessages,
+  getAcceptedFriends,
+  getMessageContacts,
+  getMessageConversations,
+  getMessageProfile,
+  getPendingFriendRequests,
   getNotifications,
   getPostComments,
   getPosts,
   markAllNotificationsRead,
   markNotificationRead,
+  respondToFriendRequest,
+  sendFriendRequest,
+  sendDirectMessage,
   toggleFollow,
   togglePostLike,
   uploadProfilePicture,
@@ -20,13 +29,52 @@ const RECENT = document.getElementById('recent');
 const SIGNUP_NAME = document.getElementById('signup-name');
 const USERNAME = document.getElementById('user_name');
 const FULLNAME = document.getElementById('full_name');
+const PROFILE_MENU_PICTURE = document.getElementById('profile-menu-picture');
 let profilePhotoURL = '';
+const SETTINGS_STORAGE_KEY = 'gamer-studio-settings';
+const DEFAULT_SETTINGS = {
+  socialNotifications: true,
+  messageNotifications: true,
+  showOnlineStatus: true,
+  appearance: 'dark'
+};
+
+function loadAppSettings() {
+  try {
+    const storedSettings = JSON.parse(localStorage.getItem(SETTINGS_STORAGE_KEY) || '{}');
+    return {
+      ...DEFAULT_SETTINGS,
+      ...storedSettings,
+      appearance: storedSettings.appearance === 'light' ? 'light' : 'dark'
+    };
+  } catch (error) {
+    console.error('Unable to load settings:', error);
+    return { ...DEFAULT_SETTINGS };
+  }
+}
+
+let appSettings = loadAppSettings();
+
+function saveAppSettings() {
+  try {
+    localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(appSettings));
+  } catch (error) {
+    console.error('Unable to save settings:', error);
+    throw new Error('Your setting could not be saved in this browser.');
+  }
+}
+
+function applyAppearance() {
+  document.documentElement.dataset.theme = appSettings.appearance;
+}
+
+applyAppearance();
 
 function applyProfilePicture(photoURL) {
   profilePhotoURL = photoURL || '';
 
   document.querySelectorAll(
-    '#header-profile-picture, #sidebar-profile-picture, .profile-avatar-image'
+    '#header-profile-picture, #sidebar-profile-picture, #profile-menu-picture, .profile-avatar-image'
   ).forEach((image) => {
     if (profilePhotoURL) {
       image.src = profilePhotoURL;
@@ -36,6 +84,8 @@ function applyProfilePicture(photoURL) {
     image.hidden = !profilePhotoURL;
   });
 
+  PROFILE_MENU_PICTURE?.closest('.lines')
+    ?.classList.toggle('has-profile-picture', Boolean(profilePhotoURL));
   if (USERNAME) USERNAME.hidden = Boolean(profilePhotoURL);
   if (secondProfile) secondProfile.hidden = Boolean(profilePhotoURL);
 }
@@ -67,6 +117,11 @@ if (SIGNUP_NAME) {
   });
 }
 
+PROFILE_MENU_PICTURE?.addEventListener('error', () => {
+  PROFILE_MENU_PICTURE.hidden = true;
+  PROFILE_MENU_PICTURE.closest('.lines')?.classList.remove('has-profile-picture');
+});
+
 showFirstLetter();
 
 const notificationBell = document.getElementById('notification-bell');
@@ -95,7 +150,12 @@ function showNotificationStatus(message) {
 
 async function refreshNotifications() {
   try {
-    const { notifications, unreadCount } = await getNotifications();
+    const { notifications: allNotifications } = await getNotifications();
+    const notifications = allNotifications.filter((notification) => {
+      if (notification.type === 'direct_message') return appSettings.messageNotifications;
+      return appSettings.socialNotifications;
+    });
+    const unreadCount = notifications.filter((notification) => !notification.read_at).length;
     notificationCount.textContent = unreadCount > 99 ? '99+' : String(unreadCount);
     notificationCount.hidden = unreadCount === 0;
     notificationBell.setAttribute(
@@ -106,7 +166,9 @@ async function refreshNotifications() {
     notificationList.replaceChildren();
 
     if (!notifications.length) {
-      showNotificationStatus('You’re all caught up. New activity will appear here.');
+      showNotificationStatus(allNotifications.length
+        ? 'Notifications are hidden by your current settings.'
+        : 'You’re all caught up. New activity will appear here.');
       return;
     }
 
@@ -146,6 +208,15 @@ async function refreshNotifications() {
                 relatedPost.querySelector('.post-comment-toggle')?.click();
               }
             }
+          } else if (
+            notification.type === 'friend_request'
+            || notification.type === 'friend_request_accepted'
+            || notification.type === 'direct_message'
+          ) {
+            setActiveMenuItem(MESSAGES_MENU_ITEM);
+            await showMessages(
+              notification.type === 'direct_message' ? notification.actor_id : null
+            );
           }
         } catch (error) {
           console.error('Unable to open notification:', error);
@@ -411,14 +482,86 @@ const GAME_NEWS_TAB = document.getElementById('button');
 const FEEDS_TAB = document.getElementById('button1');
 const NEWS_CONTAINER = document.getElementById('news-view');
 const MAIN_CONTAINER = document.getElementById('news-container');
+const addFriendButton = document.getElementById('add-friend-button');
 let sectionView = null;
 let feedLoadRequestId = 0;
 let isFeedView = false;
 let isFeedRefreshInProgress = false;
+let currentMessageChannel = null;
+let currentFriendRequestChannel = null;
+let messageViewId = 0;
+let activeGamersPresenceChannel = null;
+let activeGamersPresenceUserId = null;
+let activeGamerIds = new Set();
+let activeGamersPresenceStatus = 'connecting';
+let refreshActiveFriendFinder = null;
+
+async function startActiveGamersPresence() {
+  const { data, error } = await supabase.auth.getUser();
+  if (error) throw error;
+  if (!data.user || activeGamersPresenceChannel) return;
+
+  const user = data.user;
+  activeGamersPresenceUserId = user.id;
+  activeGamersPresenceChannel = supabase
+    .channel('gamer-studio-active-gamers', {
+      config: { presence: { key: user.id } }
+    })
+    .on('presence', { event: 'sync' }, () => {
+      const presenceState = activeGamersPresenceChannel?.presenceState() || {};
+      activeGamersPresenceStatus = 'ready';
+      activeGamerIds = new Set(
+        Object.values(presenceState)
+          .flat()
+          .map((presence) => presence.user_id)
+          .filter((id) => typeof id === 'string')
+      );
+      refreshActiveFriendFinder?.();
+    })
+    .subscribe(async (status) => {
+      if (status === 'SUBSCRIBED') {
+        const presenceStatus = appSettings.showOnlineStatus
+          ? await activeGamersPresenceChannel.track({ user_id: user.id })
+          : await activeGamersPresenceChannel.untrack();
+        if (presenceStatus !== 'ok') {
+          activeGamersPresenceStatus = 'error';
+          console.error('Unable to publish active gamer presence:', presenceStatus);
+          refreshActiveFriendFinder?.();
+        }
+      } else if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        activeGamersPresenceStatus = 'error';
+        console.error('Unable to connect active gamer presence:', status);
+        refreshActiveFriendFinder?.();
+      }
+    });
+}
+
+startActiveGamersPresence().catch((error) => {
+  console.error('Unable to start active gamer presence:', error);
+});
+
+function setAddFriendButtonVisible(visible) {
+  if (addFriendButton) addFriendButton.hidden = !visible;
+}
+
+function closeMessageChannel() {
+  if (currentMessageChannel) {
+    supabase.removeChannel(currentMessageChannel);
+    currentMessageChannel = null;
+  }
+  if (currentFriendRequestChannel) {
+    supabase.removeChannel(currentFriendRequestChannel);
+    currentFriendRequestChannel = null;
+  }
+}
 
 function showSectionView(title, message, { headingClass = '', isProfile = false } = {}) {
   if (!NEWS_CONTAINER || !MAIN_CONTAINER) return;
 
+  closeMessageChannel();
+  refreshActiveFriendFinder = null;
+  messageViewId += 1;
+  setAddFriendButtonVisible(false);
   isFeedView = false;
   feedLoadRequestId += 1;
   NEWS_CONTAINER.hidden = true;
@@ -430,6 +573,8 @@ function showSectionView(title, message, { headingClass = '', isProfile = false 
   }
 
   sectionView.replaceChildren();
+  sectionView.classList.remove('messages-view');
+  sectionView.classList.remove('settings-view');
   sectionView.classList.toggle('profile-view', isProfile);
   if (isProfile) {
     let profileName = title;
@@ -585,8 +730,718 @@ function showSectionView(title, message, { headingClass = '', isProfile = false 
 function showNewsView() {
   if (!NEWS_CONTAINER) return;
 
+  closeMessageChannel();
+  refreshActiveFriendFinder = null;
+  messageViewId += 1;
+  setAddFriendButtonVisible(false);
   NEWS_CONTAINER.hidden = false;
   if (sectionView) sectionView.hidden = true;
+}
+
+function createMessageAvatar(profile, className = 'message-avatar') {
+  const avatar = document.createElement('span');
+  avatar.className = className;
+  const image = document.createElement('img');
+  image.alt = '';
+  image.hidden = !profile.avatar_url;
+  if (profile.avatar_url) image.src = profile.avatar_url;
+  const initials = document.createElement('span');
+  initials.textContent = (profile.username || 'G').charAt(0).toUpperCase();
+  initials.hidden = Boolean(profile.avatar_url);
+  avatar.append(image, initials);
+  return avatar;
+}
+
+function createGamerOption(profile, onSelect, subtitle = '') {
+  const option = document.createElement('button');
+  option.type = 'button';
+  option.className = 'message-gamer-option';
+  option.appendChild(createMessageAvatar(profile));
+  const details = document.createElement('span');
+  details.className = 'message-gamer-details';
+  const name = document.createElement('span');
+  name.className = 'message-gamer-name';
+  name.textContent = profile.username || 'Gamer';
+  details.appendChild(name);
+  if (subtitle) {
+    const preview = document.createElement('span');
+    preview.className = 'message-gamer-preview';
+    preview.textContent = subtitle;
+    details.appendChild(preview);
+  }
+  option.appendChild(details);
+  option.addEventListener('click', () => onSelect(profile));
+  return option;
+}
+
+function showMessageStatus(element, message, isError = false) {
+  element.textContent = message;
+  element.hidden = !message;
+  element.classList.toggle('message-status-error', isError);
+}
+
+function showSettingsView() {
+  showSectionView('Settings', '', { headingClass: 'settings-page-title' });
+  if (!sectionView) return;
+  sectionView.classList.add('settings-view');
+
+  const intro = document.createElement('p');
+  intro.className = 'settings-intro';
+  intro.textContent = 'Make Gamer Studio feel right for you.';
+  const status = document.createElement('p');
+  status.className = 'settings-status';
+  status.setAttribute('role', 'status');
+  status.hidden = true;
+  const settingsList = document.createElement('div');
+  settingsList.className = 'settings-list';
+
+  const settingItems = [
+    {
+      id: 'social-notifications',
+      title: 'Social notifications',
+      description: 'Likes, comments, follows, and friend activity.',
+      setting: 'socialNotifications',
+      type: 'toggle',
+      icon: '<path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4"/>'
+    },
+    {
+      id: 'message-notifications',
+      title: 'Message notifications',
+      description: 'Show notifications when a gamer sends you a message.',
+      setting: 'messageNotifications',
+      type: 'toggle',
+      icon: '<path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8z"/>'
+    },
+    {
+      id: 'online-status',
+      title: 'Show when I’m online',
+      description: 'Let other gamers see you in the active-gamers list.',
+      setting: 'showOnlineStatus',
+      type: 'toggle',
+      icon: '<path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>'
+    },
+    {
+      id: 'appearance',
+      title: 'Appearance',
+      description: 'Choose how Gamer Studio looks on this device.',
+      type: 'appearance',
+      icon: '<path d="M12 3a9 9 0 1 0 0 18h1a2 2 0 0 0 1.7-3.1 2 2 0 0 1 1.7-3.1H18a3 3 0 0 0 3-3c0-4.9-4-8.8-9-8.8z"/><circle cx="7.5" cy="10" r=".8"/><circle cx="11" cy="7" r=".8"/><circle cx="16" cy="8" r=".8"/>'
+    },
+    {
+      id: 'help',
+      title: 'Help and support',
+      description: 'Get help with your account or using Gamer Studio.',
+      type: 'help',
+      icon: '<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3m.1 4h.01"/>'
+    },
+    {
+      id: 'invite',
+      title: 'Invite friends',
+      description: 'Share Gamer Studio with your gaming friends.',
+      type: 'invite',
+      icon: '<circle cx="9" cy="8" r="4"/><path d="M3 21v-2a6 6 0 0 1 12 0v2m4-13v6m3-3h-6"/>'
+    }
+  ];
+
+  function persistSetting() {
+    try {
+      saveAppSettings();
+      applyAppearance();
+      status.textContent = 'Your settings have been saved on this device.';
+      status.hidden = false;
+      if (!notificationPanel.hidden) refreshNotifications();
+      if (activeGamersPresenceChannel) {
+        const presenceUpdate = appSettings.showOnlineStatus && activeGamersPresenceUserId
+          ? activeGamersPresenceChannel.track({ user_id: activeGamersPresenceUserId })
+          : activeGamersPresenceChannel.untrack();
+        presenceUpdate.then((presenceStatus) => {
+          if (presenceStatus !== 'ok') throw new Error(`Presence update returned ${presenceStatus}`);
+        }).catch((error) => {
+          console.error('Unable to update online status:', error);
+          status.textContent = 'Setting saved, but online status could not be updated.';
+        });
+      }
+      return true;
+    } catch (error) {
+      console.error('Unable to save setting:', error);
+      status.textContent = error.message || 'Your setting could not be saved.';
+      status.hidden = false;
+      return false;
+    }
+  }
+
+  for (const item of settingItems) {
+    const row = document.createElement('article');
+    row.className = 'settings-item';
+    const icon = document.createElement('span');
+    icon.className = 'settings-item-icon';
+    icon.setAttribute('aria-hidden', 'true');
+    const iconSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    iconSvg.setAttribute('viewBox', '0 0 24 24');
+    iconSvg.setAttribute('fill', 'none');
+    iconSvg.setAttribute('stroke', 'currentColor');
+    iconSvg.setAttribute('stroke-width', '1.7');
+    iconSvg.setAttribute('stroke-linecap', 'round');
+    iconSvg.setAttribute('stroke-linejoin', 'round');
+    iconSvg.innerHTML = item.icon;
+    icon.appendChild(iconSvg);
+    const copy = document.createElement('div');
+    copy.className = 'settings-item-copy';
+    const title = document.createElement('h3');
+    title.textContent = item.title;
+    const description = document.createElement('p');
+    description.textContent = item.description;
+    copy.append(title, description);
+    row.append(icon, copy);
+
+    if (item.type === 'toggle' && item.setting) {
+      const label = document.createElement('label');
+      label.className = 'settings-switch';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.checked = Boolean(appSettings[item.setting]);
+      input.setAttribute('aria-label', item.title);
+      const track = document.createElement('span');
+      track.className = 'settings-switch-track';
+      label.append(input, track);
+      input.addEventListener('change', () => {
+        const previousValue = appSettings[item.setting];
+        appSettings[item.setting] = input.checked;
+        if (!persistSetting()) {
+          appSettings[item.setting] = previousValue;
+          input.checked = previousValue;
+        }
+      });
+      row.appendChild(label);
+    } else if (item.type === 'appearance') {
+      const select = document.createElement('select');
+      select.className = 'settings-select';
+      select.setAttribute('aria-label', 'Appearance');
+      for (const [value, label] of [['dark', 'Dark'], ['light', 'Light']]) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = label;
+        select.appendChild(option);
+      }
+      select.value = appSettings.appearance;
+      select.addEventListener('change', () => {
+        const previousValue = appSettings.appearance;
+        appSettings.appearance = select.value;
+        if (!persistSetting()) {
+          appSettings.appearance = previousValue;
+          select.value = previousValue;
+        }
+      });
+      row.appendChild(select);
+    } else if (item.type === 'help') {
+      const helpButton = document.createElement('button');
+      helpButton.type = 'button';
+      helpButton.className = 'settings-action';
+      helpButton.textContent = 'View help';
+      const helpDetails = document.createElement('p');
+      helpDetails.className = 'settings-help-details';
+      helpDetails.hidden = true;
+      helpDetails.textContent = 'Use Feed to share posts, Messages to chat and manage friend requests, and your profile icon to update your name or photo. If something is not working, check your connection and make sure the latest Supabase schema has been applied.';
+      helpButton.setAttribute('aria-expanded', 'false');
+      helpButton.addEventListener('click', () => {
+        helpDetails.hidden = !helpDetails.hidden;
+        helpButton.setAttribute('aria-expanded', String(!helpDetails.hidden));
+        helpButton.textContent = helpDetails.hidden ? 'View help' : 'Hide help';
+      });
+      row.classList.add('settings-help-item');
+      row.append(helpButton, helpDetails);
+    } else if (item.type === 'invite') {
+      const inviteButton = document.createElement('button');
+      inviteButton.type = 'button';
+      inviteButton.className = 'settings-action';
+      inviteButton.textContent = 'Invite';
+      inviteButton.addEventListener('click', async () => {
+        const inviteData = {
+          title: 'Join me on Gamer Studio',
+          text: 'Connect with me, chat about games, and share your gaming posts on Gamer Studio.',
+          url: window.location.href
+        };
+        try {
+          if (navigator.share) {
+            await navigator.share(inviteData);
+          } else if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(inviteData.url);
+            status.textContent = 'Invite link copied. Share it with your friends!';
+            status.hidden = false;
+          } else {
+            throw new Error('Sharing is not supported by this browser.');
+          }
+        } catch (error) {
+          if (error.name === 'AbortError') return;
+          console.error('Unable to share invite:', error);
+          status.textContent = error.message || 'The invite could not be shared.';
+          status.hidden = false;
+        }
+      });
+      row.appendChild(inviteButton);
+    }
+
+    settingsList.appendChild(row);
+  }
+
+  sectionView.append(intro, status, settingsList);
+}
+
+async function showMessages(initialGamerId = null) {
+  showSectionView('Messages', '', { headingClass: 'messages-page-title' });
+  if (!sectionView) return;
+  const thisViewId = messageViewId;
+  sectionView.classList.add('messages-view');
+
+  const { data, error: userError } = await supabase.auth.getUser();
+  if (userError) throw userError;
+  if (thisViewId !== messageViewId) return;
+  if (!data.user) throw new Error('Sign in to use messages');
+  setAddFriendButtonVisible(true);
+  const currentUserId = data.user.id;
+
+  const intro = document.createElement('p');
+  intro.className = 'messages-intro';
+  intro.textContent = 'Chat privately with other gamers. Search for a gamer to start a conversation.';
+
+  const layout = document.createElement('div');
+  layout.className = 'messages-layout';
+  layout.dataset.chatOpen = 'false';
+  const sidebar = document.createElement('aside');
+  sidebar.className = 'messages-sidebar';
+  const requestsHeading = document.createElement('h3');
+  requestsHeading.className = 'messages-list-heading';
+  requestsHeading.textContent = 'Friend requests';
+  const requestsStatus = document.createElement('p');
+  requestsStatus.className = 'messages-list-status';
+  requestsStatus.setAttribute('role', 'status');
+  const requestsList = document.createElement('div');
+  requestsList.className = 'messages-gamer-list';
+  const friendsHeading = document.createElement('h3');
+  friendsHeading.className = 'messages-list-heading';
+  friendsHeading.textContent = 'Friends';
+  const friendsStatus = document.createElement('p');
+  friendsStatus.className = 'messages-list-status';
+  friendsStatus.setAttribute('role', 'status');
+  const friendsList = document.createElement('div');
+  friendsList.className = 'messages-gamer-list';
+  const conversationsHeading = document.createElement('h3');
+  conversationsHeading.className = 'messages-list-heading';
+  conversationsHeading.textContent = 'Recent chats';
+  const conversationsStatus = document.createElement('p');
+  conversationsStatus.className = 'messages-list-status';
+  conversationsStatus.setAttribute('role', 'status');
+  conversationsStatus.textContent = 'Loading your chats...';
+  const conversationsList = document.createElement('div');
+  conversationsList.className = 'messages-gamer-list';
+  sidebar.append(
+    requestsHeading, requestsStatus, requestsList,
+    friendsHeading, friendsStatus, friendsList,
+    conversationsHeading, conversationsStatus, conversationsList
+  );
+
+  const chat = document.createElement('section');
+  chat.className = 'messages-chat';
+  chat.setAttribute('aria-label', 'Private conversation');
+  const chatEmpty = document.createElement('div');
+  chatEmpty.className = 'messages-chat-empty';
+  const emptyTitle = document.createElement('h3');
+  emptyTitle.textContent = 'Your next match starts here';
+  const emptyCopy = document.createElement('p');
+  emptyCopy.textContent = 'Choose a recent chat or search for a gamer to talk strategy, share tips, and team up.';
+  chatEmpty.append(emptyTitle, emptyCopy);
+  chat.appendChild(chatEmpty);
+  layout.append(sidebar, chat);
+  const friendFinder = document.createElement('section');
+  friendFinder.className = 'friend-finder';
+  friendFinder.hidden = true;
+  friendFinder.setAttribute('role', 'dialog');
+  friendFinder.setAttribute('aria-modal', 'true');
+  friendFinder.setAttribute('aria-labelledby', 'friend-finder-title');
+  const friendFinderHeader = document.createElement('header');
+  friendFinderHeader.className = 'friend-finder-header';
+  const friendFinderTitle = document.createElement('h3');
+  friendFinderTitle.id = 'friend-finder-title';
+  friendFinderTitle.textContent = 'Find active gamers';
+  const closeFriendFinder = document.createElement('button');
+  closeFriendFinder.type = 'button';
+  closeFriendFinder.className = 'friend-finder-close';
+  closeFriendFinder.setAttribute('aria-label', 'Close find gamers');
+  closeFriendFinder.textContent = '×';
+  friendFinderHeader.append(friendFinderTitle, closeFriendFinder);
+  const searchForm = document.createElement('form');
+  searchForm.className = 'messages-search';
+  const searchInput = document.createElement('input');
+  searchInput.type = 'search';
+  searchInput.placeholder = 'Search gamers by name';
+  searchInput.setAttribute('aria-label', 'Search active gamers by name');
+  searchInput.autocomplete = 'off';
+  const searchButton = document.createElement('button');
+  searchButton.type = 'submit';
+  searchButton.textContent = 'Search';
+  searchForm.append(searchInput, searchButton);
+  const searchStatus = document.createElement('p');
+  searchStatus.className = 'messages-list-status';
+  searchStatus.setAttribute('role', 'status');
+  const searchResults = document.createElement('div');
+  searchResults.className = 'messages-gamer-list friend-finder-list';
+  friendFinder.append(friendFinderHeader, searchForm, searchStatus, searchResults);
+  sectionView.append(intro, layout, friendFinder);
+
+  let activePeerId = null;
+  let activePeer = null;
+  let activeThread = 0;
+  let friendSearchRequestId = 0;
+
+  async function refreshFriendSections() {
+    try {
+      const [requests, friends] = await Promise.all([
+        getPendingFriendRequests(),
+        getAcceptedFriends()
+      ]);
+      if (thisViewId !== messageViewId) return;
+
+      requestsList.replaceChildren();
+      showMessageStatus(requestsStatus, requests.length ? '' : 'No new friend requests.');
+      for (const request of requests) {
+        const row = document.createElement('div');
+        row.className = 'message-friend-request';
+        row.appendChild(createMessageAvatar(request.profile));
+        const name = document.createElement('span');
+        name.className = 'friend-gamer-name';
+        name.textContent = request.profile.username || 'Gamer';
+        const actions = document.createElement('span');
+        actions.className = 'message-request-actions';
+        for (const accept of [true, false]) {
+          const action = document.createElement('button');
+          action.type = 'button';
+          action.className = accept ? 'friend-add-button' : 'friend-decline-button';
+          action.textContent = accept ? 'Accept' : 'Decline';
+          action.addEventListener('click', async () => {
+            action.disabled = true;
+            try {
+              await respondToFriendRequest(request.id, accept);
+              await refreshFriendSections();
+              await refreshConversations();
+              if (accept && !friendFinder.hidden) searchGamers();
+            } catch (error) {
+              console.error('Unable to respond to friend request:', error);
+              showMessageStatus(
+                requestsStatus,
+                error.message || 'The friend request could not be updated. Please try again.',
+                true
+              );
+              action.disabled = false;
+            }
+          });
+          actions.appendChild(action);
+        }
+        row.append(name, actions);
+        requestsList.appendChild(row);
+      }
+
+      friendsList.replaceChildren();
+      showMessageStatus(friendsStatus, friends.length ? '' : 'Accepted friends will appear here.');
+      for (const friend of friends) {
+        friendsList.appendChild(createGamerOption(friend, openConversation));
+      }
+    } catch (error) {
+      console.error('Unable to load friend requests and friends:', error);
+      showMessageStatus(requestsStatus, 'Friend requests could not be loaded. Please try again.', true);
+      showMessageStatus(friendsStatus, 'Your friends could not be loaded. Please try again.', true);
+    }
+  }
+
+  async function searchGamers() {
+    const requestId = ++friendSearchRequestId;
+    const term = searchInput.value.trim();
+    searchResults.replaceChildren();
+    showMessageStatus(
+      searchStatus,
+      activeGamersPresenceStatus === 'error'
+        ? 'Online gamer status is unavailable right now.'
+        : (term ? 'Searching active gamers...' : 'Checking who is online...')
+    );
+    if (activeGamersPresenceStatus === 'error') return;
+    if (activeGamersPresenceStatus === 'connecting') return;
+
+    try {
+      const profiles = await getMessageContacts(term, [...activeGamerIds]);
+      if (requestId !== friendSearchRequestId
+        || thisViewId !== messageViewId
+        || searchInput.value.trim() !== term
+        || friendFinder.hidden) return;
+      const otherGamersOnline = [...activeGamerIds].some((id) => id !== currentUserId);
+      showMessageStatus(
+        searchStatus,
+        profiles.length
+          ? ''
+          : (otherGamersOnline ? 'No active gamers match that name.' : 'No other gamers are online right now.')
+      );
+      for (const profile of profiles) {
+        const row = document.createElement('div');
+        row.className = 'friend-gamer-row';
+        row.appendChild(createMessageAvatar(profile));
+        const name = document.createElement('span');
+        name.className = 'friend-gamer-name';
+        name.textContent = profile.username || 'Gamer';
+        const addButton = document.createElement('button');
+        addButton.type = 'button';
+        addButton.className = 'friend-add-button';
+        const buttonLabels = {
+          friends: 'Friends',
+          request_sent: 'Requested',
+          request_received: 'Accept',
+          not_sent: 'Add'
+        };
+        addButton.textContent = buttonLabels[profile.friendshipStatus];
+        addButton.setAttribute('aria-pressed', String(profile.friendshipStatus === 'friends'));
+        addButton.disabled = profile.friendshipStatus === 'friends' || profile.friendshipStatus === 'request_sent';
+        addButton.addEventListener('click', async () => {
+          addButton.disabled = true;
+          addButton.textContent = profile.friendshipStatus === 'request_received' ? 'Accepting...' : 'Sending...';
+          try {
+            if (profile.friendshipStatus === 'request_received' && profile.incomingRequestId) {
+              await respondToFriendRequest(profile.incomingRequestId, true);
+              profile.friendshipStatus = 'friends';
+            } else {
+              profile.friendshipStatus = await sendFriendRequest(profile.id);
+            }
+            await refreshFriendSections();
+            if (profile.friendshipStatus === 'request_received') {
+              await searchGamers();
+              return;
+            }
+            addButton.textContent = buttonLabels[profile.friendshipStatus] || 'Requested';
+            addButton.classList.toggle('is-added', profile.friendshipStatus === 'friends');
+            addButton.setAttribute('aria-pressed', String(profile.friendshipStatus === 'friends'));
+            addButton.disabled = profile.friendshipStatus !== 'not_sent';
+          } catch (error) {
+            console.error('Unable to send or accept friend request:', error);
+            showMessageStatus(searchStatus, error.message || 'The friend request could not be updated. Please try again.', true);
+            addButton.textContent = buttonLabels[profile.friendshipStatus] || 'Add';
+            addButton.disabled = profile.friendshipStatus === 'friends' || profile.friendshipStatus === 'request_sent';
+          }
+        });
+        row.append(name, addButton);
+        searchResults.appendChild(row);
+      }
+    } catch (error) {
+      console.error('Unable to search active gamers:', error);
+      showMessageStatus(searchStatus, 'Active gamers could not be loaded. Please try again.', true);
+    }
+  }
+
+  async function refreshConversations() {
+    try {
+      const conversations = await getMessageConversations();
+      if (thisViewId !== messageViewId) return;
+      conversationsList.replaceChildren();
+      showMessageStatus(
+        conversationsStatus,
+        conversations.length ? '' : 'No conversations yet. Search for a gamer to say hello.',
+      );
+      for (const conversation of conversations) {
+        conversationsList.appendChild(createGamerOption(
+          conversation,
+          openConversation,
+          conversation.latestMessage.content
+        ));
+      }
+    } catch (error) {
+      console.error('Unable to load conversations:', error);
+      showMessageStatus(conversationsStatus, 'Your conversations could not be loaded. Please try again.', true);
+    }
+  }
+
+  async function loadThread(messagesElement, statusElement, expectedViewId) {
+    try {
+      const messages = await getDirectMessages(activePeerId);
+      if (expectedViewId !== activeThread || thisViewId !== messageViewId) return;
+      messagesElement.replaceChildren();
+      if (!messages.length) {
+        const emptyThread = document.createElement('p');
+        emptyThread.className = 'messages-thread-empty';
+        emptyThread.textContent = `Say hello to ${activePeer.username || 'this gamer'} to start the conversation.`;
+        messagesElement.appendChild(emptyThread);
+      }
+      for (const message of messages) {
+        const bubble = document.createElement('article');
+        bubble.className = `message-bubble${message.isOwnMessage ? ' own-message' : ''}`;
+        const copy = document.createElement('p');
+        copy.textContent = message.content;
+        const time = document.createElement('time');
+        time.dateTime = message.created_at;
+        time.textContent = new Date(message.created_at).toLocaleString([], {
+          month: 'short',
+          day: 'numeric',
+          hour: 'numeric',
+          minute: '2-digit'
+        });
+        bubble.append(copy, time);
+        messagesElement.appendChild(bubble);
+      }
+      messagesElement.scrollTop = messagesElement.scrollHeight;
+      showMessageStatus(statusElement, '');
+    } catch (error) {
+      console.error('Unable to load direct messages:', error);
+      showMessageStatus(statusElement, 'Messages could not be loaded. Check your connection and try again.', true);
+    }
+  }
+
+  async function openConversation(profile) {
+    if (!profile?.id || profile.id === currentUserId) return;
+    activePeerId = profile.id;
+    activePeer = profile;
+    activeThread += 1;
+    const threadId = activeThread;
+    closeMessageChannel();
+    layout.dataset.chatOpen = 'true';
+    chat.replaceChildren();
+
+    const header = document.createElement('header');
+    header.className = 'messages-chat-header';
+    const backButton = document.createElement('button');
+    backButton.type = 'button';
+    backButton.className = 'messages-back-button';
+    backButton.textContent = 'Back';
+    backButton.addEventListener('click', () => {
+      layout.dataset.chatOpen = 'false';
+      chat.replaceChildren(chatEmpty);
+      activePeerId = null;
+      activePeer = null;
+      activeThread += 1;
+      closeMessageChannel();
+      refreshConversations();
+    });
+    const peerHeading = document.createElement('div');
+    peerHeading.className = 'messages-peer-heading';
+    peerHeading.appendChild(createMessageAvatar(profile, 'message-avatar message-peer-avatar'));
+    const peerName = document.createElement('h3');
+    peerName.textContent = profile.username || 'Gamer';
+    peerHeading.appendChild(peerName);
+    header.append(backButton, peerHeading);
+
+    const status = document.createElement('p');
+    status.className = 'messages-thread-status';
+    status.setAttribute('role', 'status');
+    status.hidden = true;
+    const thread = document.createElement('div');
+    thread.className = 'messages-thread';
+    thread.setAttribute('role', 'log');
+    thread.setAttribute('aria-label', `Conversation with ${profile.username || 'Gamer'}`);
+    thread.setAttribute('aria-live', 'polite');
+
+    const form = document.createElement('form');
+    form.className = 'messages-composer';
+    const input = document.createElement('textarea');
+    input.maxLength = 2000;
+    input.rows = 1;
+    input.placeholder = 'Write a message...';
+    input.setAttribute('aria-label', 'Write a message');
+    const sendButton = document.createElement('button');
+    sendButton.type = 'submit';
+    sendButton.textContent = 'Send';
+    form.append(input, sendButton);
+    chat.append(header, status, thread, form);
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const content = input.value.trim();
+      if (!content) {
+        input.focus();
+        return;
+      }
+      sendButton.disabled = true;
+      showMessageStatus(status, '');
+      try {
+        await sendDirectMessage(profile.id, content);
+        input.value = '';
+        await loadThread(thread, status, threadId);
+        await refreshConversations();
+      } catch (error) {
+        console.error('Unable to send direct message:', error);
+        showMessageStatus(status, error.message || 'Your message could not be sent. Please try again.', true);
+      } finally {
+        sendButton.disabled = false;
+      }
+    });
+
+    await loadThread(thread, status, threadId);
+    currentMessageChannel = supabase
+      .channel(`direct-messages-${currentUserId}-${profile.id}`)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'direct_messages',
+        filter: `recipient_id=eq.${currentUserId}`
+      }, () => {
+        if (activePeerId === profile.id) {
+          loadThread(thread, status, threadId);
+          refreshConversations();
+        }
+      })
+      .subscribe((subscriptionStatus) => {
+        if (subscriptionStatus === 'CHANNEL_ERROR' || subscriptionStatus === 'TIMED_OUT') {
+          console.warn('Live direct-message updates are unavailable.');
+          showMessageStatus(status, 'Live updates are unavailable. Reopen this chat to check for new messages.', true);
+        }
+      });
+  }
+
+  sectionView.addEventListener('messages-add-friend', () => {
+    friendFinder.hidden = false;
+    searchGamers();
+    searchInput.focus();
+  });
+  closeFriendFinder.addEventListener('click', () => {
+    friendFinder.hidden = true;
+    addFriendButton?.focus();
+  });
+  friendFinder.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      friendFinder.hidden = true;
+      addFriendButton?.focus();
+    }
+  });
+  friendFinder.addEventListener('click', (event) => {
+    if (event.target === friendFinder) friendFinder.hidden = true;
+  });
+
+  searchForm.addEventListener('submit', (event) => {
+    event.preventDefault();
+    searchGamers();
+  });
+  searchInput.addEventListener('input', () => {
+    searchGamers();
+  });
+  refreshActiveFriendFinder = () => {
+    if (!friendFinder.hidden) searchGamers();
+  };
+  currentFriendRequestChannel = supabase
+    .channel(`friend-requests-${currentUserId}`)
+    .on('postgres_changes', {
+      event: '*',
+      schema: 'public',
+      table: 'friend_requests'
+    }, () => {
+      refreshFriendSections();
+      refreshActiveFriendFinder?.();
+    })
+    .subscribe((status) => {
+      if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
+        console.warn('Live friend-request updates are unavailable.');
+      }
+    });
+  await Promise.all([refreshFriendSections(), refreshConversations()]);
+  if (initialGamerId && thisViewId === messageViewId) {
+    try {
+      await openConversation(await getMessageProfile(initialGamerId));
+    } catch (error) {
+      console.error('Unable to open conversation from notification:', error);
+      showMessageStatus(conversationsStatus, 'This conversation could not be opened.', true);
+    }
+  }
 }
 
 function setActiveMenuItem(activeItem) {
@@ -601,12 +1456,16 @@ function setActiveMenuItem(activeItem) {
 
 function setActiveTab(activeTab, inactiveTab) {
   if (inactiveTab) {
+    inactiveTab.classList.remove('tab-active');
+    inactiveTab.classList.add('tab-inactive');
     inactiveTab.style.backgroundColor = 'transparent';
     inactiveTab.style.borderColor = 'transparent';
     inactiveTab.style.color = '#b7b9ae';
   }
 
   if (activeTab) {
+    activeTab.classList.remove('tab-inactive');
+    activeTab.classList.add('tab-active');
     activeTab.style.backgroundColor = 'navy';
     activeTab.style.borderColor = 'navy';
     activeTab.style.color = 'white';
@@ -1266,7 +2125,11 @@ const SETTINGS_MENU_ITEM = Array.from(MENU_ITEMS).find(
 
 MESSAGES_MENU_ITEM?.addEventListener('click', () => {
   setActiveMenuItem(MESSAGES_MENU_ITEM);
-  showSectionView('Messages', 'Messages will be available here.');
+  showMessages().catch((error) => {
+    console.error('Unable to open messages:', error);
+    if (MESSAGES_MENU_ITEM?.getAttribute('aria-current') !== 'page') return;
+    showSectionView('Messages', error.message || 'Messages could not be opened. Please try again.');
+  });
 });
 PROFILE_MENU_ITEM?.addEventListener('click', () => {
   const gamerName = FULLNAME?.textContent.trim() || 'Gamer';
@@ -1274,5 +2137,9 @@ PROFILE_MENU_ITEM?.addEventListener('click', () => {
 });
 SETTINGS_MENU_ITEM?.addEventListener('click', () => {
   setActiveMenuItem(SETTINGS_MENU_ITEM);
-  showSectionView('Settings', 'Settings will be available here.');
+  showSettingsView();
+});
+
+addFriendButton?.addEventListener('click', () => {
+  sectionView?.dispatchEvent(new Event('messages-add-friend'));
 });

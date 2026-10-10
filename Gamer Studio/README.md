@@ -19,24 +19,30 @@ Gaming community
 ## Supabase setup
 
 1. In the Supabase SQL Editor, run `supabase-schema.sql` to create the profile,
-   post, like, follow, comment, and notification tables, their row-level
-   security policies, database triggers/functions, and the `game assets`
+   post, like, follow, comment, notification, and private direct-message tables,
+   their row-level security policies, database triggers/functions, and the `game assets`
    bucket. Feed posts show the author's profile photo and name with a working
    Follow/Following button. Comments show commenter avatars and post comment
-   counts. Authors can delete their posts, which also removes related comments
-   and likes and cleans up the uploaded media. The bucket accepts images and
+   counts. Gamers can search profiles and send private messages; only the sender
+   and recipient can read a conversation. Friend requests must be accepted
+   before users become friends. On mobile, the Messages header lets users find
+   currently online gamers and send friend requests. Authors can delete their posts, which
+   also removes related comments and likes and cleans up the uploaded media. The bucket accepts images and
    videos up to 5 MB. The schema synchronizes existing and newly uploaded
    profile photos into `profiles.avatar_url`, which is used on feed posts.
+   Settings include local notification filters, online visibility, appearance,
+   help, and friend invites. These preferences are saved in the current browser.
    Existing projects must rerun this schema to add the follow, notifications,
-   and comments features, post media/comment-count columns, and update bucket settings. If
-   you only need to update Storage, run
+   comments, and private messaging features, post media/comment-count columns,
+   and update bucket settings. If you only need to update Storage, run
    `supabase-storage-policies.sql`; it updates the existing bucket settings and
    owner-scoped upload, update, and delete policies.
    To enable post deletion without rerunning the full schema, run
    `supabase-post-delete.sql` in the Supabase SQL Editor.
-2. Notifications cover sign-ins, new member joins, post likes, comments, and
-   new followers. Live updates use Supabase Realtime when available; the app
-   also refreshes notification counts periodically. Comments, follows, and
+2. Notifications cover sign-ins, new member joins, post likes, comments,
+   follows, friend requests, accepted requests, and incoming private messages.
+   Notifications, friend requests, incoming private messages, and online gamer
+   presence use Supabase Realtime; the app also refreshes notification counts periodically. Comments, follows, friend requests, and
    notifications require the updated schema to be applied in the Supabase SQL
    Editor.
 3. To enable both Google sign-up and sign-in:
