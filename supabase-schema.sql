@@ -451,6 +451,19 @@ create trigger on_auth_user_metadata_updated
   after update of raw_user_meta_data on auth.users
   for each row execute procedure public.create_profile_for_user();
 
+insert into public.profiles (id, username, avatar_url)
+select
+  auth_users.id,
+  coalesce(
+    nullif(auth_users.raw_user_meta_data ->> 'display_name', ''),
+    nullif(auth_users.raw_user_meta_data ->> 'name', ''),
+    nullif(split_part(coalesce(auth_users.email, ''), '@', 1), ''),
+    'Gamer'
+  ),
+  auth_users.raw_user_meta_data ->> 'avatar_url'
+from auth.users as auth_users
+on conflict (id) do nothing;
+
 update public.profiles as profiles
 set username = coalesce(
       auth_users.raw_user_meta_data ->> 'display_name',
@@ -474,6 +487,45 @@ where profiles.id = auth_users.id
       profiles.avatar_url
     )
   );
+
+create or replace function public.search_gamers(search_term text default '')
+returns table (id uuid, username text, avatar_url text)
+language sql
+stable
+security definer
+set search_path = ''
+as $$
+  select
+    auth_users.id,
+    coalesce(
+      nullif(btrim(profiles.username), ''),
+      nullif(btrim(auth_users.raw_user_meta_data ->> 'display_name'), ''),
+      nullif(btrim(auth_users.raw_user_meta_data ->> 'name'), ''),
+      nullif(split_part(coalesce(auth_users.email, ''), '@', 1), ''),
+      'Gamer'
+    ) as username,
+    coalesce(profiles.avatar_url, auth_users.raw_user_meta_data ->> 'avatar_url') as avatar_url
+  from auth.users as auth_users
+  left join public.profiles as profiles on profiles.id = auth_users.id
+  where auth.uid() is not null
+    and auth_users.id <> auth.uid()
+    and (
+      nullif(btrim(search_term), '') is null
+      or position(
+        lower(btrim(search_term)) in lower(concat_ws(
+          ' ',
+          profiles.username,
+          auth_users.raw_user_meta_data ->> 'display_name',
+          auth_users.raw_user_meta_data ->> 'name',
+          split_part(coalesce(auth_users.email, ''), '@', 1)
+        ))
+      ) > 0
+    )
+  order by 2;
+$$;
+
+revoke all on function public.search_gamers(text) from public;
+grant execute on function public.search_gamers(text) to authenticated;
 
 create or replace function public.notify_new_member()
 returns trigger

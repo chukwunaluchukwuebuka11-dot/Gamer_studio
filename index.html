@@ -1581,6 +1581,64 @@ font-family: "Archivo Black", sans-serif;
     .friend-finder[hidden]{
         display:none;
     }
+    .friend-finder:not([hidden]){
+        position:fixed;
+        inset:0;
+        z-index:30;
+        display:flex;
+        flex-direction:column;
+        width:min(480px, calc(100vw - 32px));
+        max-height:min(720px, calc(100dvh - 48px));
+        margin:auto;
+        overflow:hidden;
+        padding:18px;
+        border:1px solid #303139;
+        border-radius:18px;
+        background:#101114;
+        color:#f3f2e9;
+        box-sizing:border-box;
+        box-shadow:0 24px 80px rgba(0,0,0,.55);
+    }
+    .friend-finder-header{
+        display:flex;
+        align-items:center;
+        justify-content:space-between;
+        gap:12px;
+        padding:2px 2px 14px;
+    }
+    .friend-finder-header h3{
+        font-size:21px;
+    }
+    .friend-finder-close{
+        display:grid;
+        place-items:center;
+        width:36px;
+        height:36px;
+        flex:none;
+        border:1px solid #3a3c46;
+        border-radius:50%;
+        background:#191a20;
+        color:white;
+        font:inherit;
+        font-size:24px;
+        line-height:1;
+        cursor:pointer;
+    }
+    .friend-finder .messages-search{
+        flex:none;
+        padding:0 0 12px;
+        border:0;
+    }
+    .friend-finder-list{
+        flex:1;
+        overflow-y:auto;
+        overscroll-behavior:contain;
+    }
+    @media (min-width: 681px){
+        .friend-finder:not([hidden]){
+            display:none;
+        }
+    }
     @media (max-width: 680px){
         #section-view.settings-view{
             width:100%;
@@ -1610,13 +1668,22 @@ font-family: "Archivo Black", sans-serif;
             padding-left:47px;
         }
         #section-view.messages-view{
+            align-items:center;
             min-height:calc(100dvh - 150px);
             padding-bottom:8px;
+        }
+        .messages-page-title,
+        .messages-intro{
+            align-self:center;
+            width:min(100%, 560px);
+            text-align:center;
         }
         .messages-layout{
             position:relative;
             grid-template-columns:minmax(0, 1fr);
+            width:min(100%, 560px);
             min-height:calc(100dvh - 220px);
+            margin:0 auto;
         }
         .messages-sidebar{
             border-right:0;
@@ -1643,42 +1710,18 @@ font-family: "Archivo Black", sans-serif;
             min-height:42px;
         }
         .friend-finder:not([hidden]){
-            position:fixed;
             inset:56px 0 calc(66px + env(safe-area-inset-bottom));
-            z-index:20;
-            display:flex;
-            flex-direction:column;
-            overflow:hidden;
             padding:16px 14px 18px;
             border-top:1px solid #303139;
+            border-right:0;
+            border-bottom:0;
+            border-left:0;
+            border-radius:0;
             background:rgba(8,9,12,.98);
-            color:#f3f2e9;
-            box-sizing:border-box;
-        }
-        .friend-finder-header{
-            display:flex;
-            align-items:center;
-            justify-content:space-between;
-            gap:12px;
-            padding:2px 2px 14px;
-        }
-        .friend-finder-header h3{
-            font-size:21px;
-        }
-        .friend-finder-close{
-            display:grid;
-            place-items:center;
-            width:36px;
-            height:36px;
-            flex:none;
-            border:1px solid #3a3c46;
-            border-radius:50%;
-            background:#191a20;
-            color:white;
-            font:inherit;
-            font-size:24px;
-            line-height:1;
-            cursor:pointer;
+            width:auto;
+            max-height:none;
+            margin:0;
+            box-shadow:none;
         }
         .friend-finder .messages-search{
             flex:none;
@@ -1711,7 +1754,7 @@ font-family: "Archivo Black", sans-serif;
         .friend-gamer-row .message-avatar{
             position:relative;
         }
-        .friend-gamer-row .message-avatar::after{
+        .friend-gamer-row.is-online .message-avatar::after{
             position:absolute;
             right:0;
             bottom:0;

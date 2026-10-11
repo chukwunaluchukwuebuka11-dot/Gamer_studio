@@ -225,10 +225,14 @@ GOOGLE_BTNS.forEach((button) => {
   });
 });
 
+export async function signOutUser() {
+  const { error } = await supabase.auth.signOut();
+  if (error) throw error;
+}
+
 LOGOUT?.addEventListener('click', async () => {
   try {
-    const { error } = await supabase.auth.signOut();
-    if (error) throw error;
+    await signOutUser();
   } catch (error) {
     console.error('Unable to log out:', error);
     alert(error.message || 'Unable to log out. Please try again.');
@@ -498,29 +502,18 @@ export async function markAllNotificationsRead() {
   if (error) throw error;
 }
 
-export async function getMessageContacts(searchTerm, activeUserIds) {
+export async function getMessageContacts(searchTerm) {
   const user = await getCurrentUser();
-  const term = searchTerm.trim();
-  const onlineUserIds = [...new Set(activeUserIds)].filter((id) => id !== user.id);
-  if (!onlineUserIds.length) return [];
-
-  let profilesQuery = supabase.from('profiles')
-    .select('id, username, avatar_url')
-    .in('id', onlineUserIds);
-  if (term) profilesQuery = profilesQuery.ilike('username', `%${term}%`);
-
   const [profilesResult, sentResult, receivedResult] = await Promise.all([
-    profilesQuery.order('username', { ascending: true }).limit(50),
+    supabase.rpc('search_gamers', { search_term: searchTerm.trim() }),
     supabase
       .from('friend_requests')
       .select('id, recipient_id, status')
-      .eq('requester_id', user.id)
-      .in('recipient_id', onlineUserIds),
+      .eq('requester_id', user.id),
     supabase
       .from('friend_requests')
       .select('id, requester_id, status')
       .eq('recipient_id', user.id)
-      .in('requester_id', onlineUserIds)
   ]);
   if (profilesResult.error) throw profilesResult.error;
   if (sentResult.error) throw sentResult.error;

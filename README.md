@@ -26,12 +26,18 @@ Gaming community
    counts. Gamers can search profiles and send private messages; only the sender
    and recipient can read a conversation. Friend requests must be accepted
    before users become friends. On mobile, the Messages header lets users find
-   currently online gamers and send friend requests. Authors can delete their posts, which
-   also removes related comments and likes and cleans up the uploaded media. The bucket accepts images and
-   videos up to 5 MB. The schema synchronizes existing and newly uploaded
-   profile photos into `profiles.avatar_url`, which is used on feed posts.
-   Settings include local notification filters, online visibility, appearance,
-   help, and friend invites. These preferences are saved in the current browser.
+   gamer profiles, see profile pictures and online status, and send friend
+   requests. Friends and previous conversations appear in the Messages list.
+   Authors can delete their posts, which also removes related comments and likes
+   and cleans up the uploaded media. The bucket accepts images and videos up to
+   5 MB. The schema synchronizes existing and newly uploaded profile photos
+   into `profiles.avatar_url`, which is used on feed posts. Settings include
+   local notification filters, online visibility, appearance, help, friend
+   invites, and a sign-out action. These preferences are saved in the current
+   browser. Rerunning the schema backfills profile rows for accounts that
+   registered before profile creation was enabled and adds name search across
+   registered accounts in the friend finder. Rerun it after app updates that add
+   Supabase functions.
    Existing projects must rerun this schema to add the follow, notifications,
    comments, and private messaging features, post media/comment-count columns,
    and update bucket settings. If you only need to update Storage, run

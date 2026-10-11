@@ -16,6 +16,7 @@ import {
   respondToFriendRequest,
   sendFriendRequest,
   sendDirectMessage,
+  signOutUser,
   toggleFollow,
   togglePostLike,
   uploadProfilePicture,
@@ -495,6 +496,11 @@ let activeGamersPresenceUserId = null;
 let activeGamerIds = new Set();
 let activeGamersPresenceStatus = 'connecting';
 let refreshActiveFriendFinder = null;
+let closeActiveFriendFinder = null;
+
+window.matchMedia('(max-width: 680px)').addEventListener('change', (event) => {
+  if (!event.matches) closeActiveFriendFinder?.();
+});
 
 async function startActiveGamersPresence() {
   const { data, error } = await supabase.auth.getUser();
@@ -560,6 +566,7 @@ function showSectionView(title, message, { headingClass = '', isProfile = false 
 
   closeMessageChannel();
   refreshActiveFriendFinder = null;
+  closeActiveFriendFinder = null;
   messageViewId += 1;
   setAddFriendButtonVisible(false);
   isFeedView = false;
@@ -840,6 +847,13 @@ function showSettingsView() {
       description: 'Share Gamer Studio with your gaming friends.',
       type: 'invite',
       icon: '<circle cx="9" cy="8" r="4"/><path d="M3 21v-2a6 6 0 0 1 12 0v2m4-13v6m3-3h-6"/>'
+    },
+    {
+      id: 'logout',
+      title: 'Log out',
+      description: 'Sign out of your Gamer Studio account on this device.',
+      type: 'logout',
+      icon: '<path d="M10 17l5-5-5-5m5 5H3"/><path d="M12 3h6a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-6"/>'
     }
   ];
 
@@ -979,6 +993,25 @@ function showSettingsView() {
         }
       });
       row.appendChild(inviteButton);
+    } else if (item.type === 'logout') {
+      const logoutButton = document.createElement('button');
+      logoutButton.type = 'button';
+      logoutButton.className = 'settings-action';
+      logoutButton.textContent = 'Log out';
+      logoutButton.addEventListener('click', async () => {
+        logoutButton.disabled = true;
+        logoutButton.textContent = 'Logging out...';
+        try {
+          await signOutUser();
+        } catch (error) {
+          console.error('Unable to log out:', error);
+          status.textContent = error.message || 'Unable to log out. Please try again.';
+          status.hidden = false;
+          logoutButton.disabled = false;
+          logoutButton.textContent = 'Log out';
+        }
+      });
+      row.appendChild(logoutButton);
     }
 
     settingsList.appendChild(row);
@@ -1062,7 +1095,7 @@ async function showMessages(initialGamerId = null) {
   friendFinderHeader.className = 'friend-finder-header';
   const friendFinderTitle = document.createElement('h3');
   friendFinderTitle.id = 'friend-finder-title';
-  friendFinderTitle.textContent = 'Find active gamers';
+  friendFinderTitle.textContent = 'Find gamers to add';
   const closeFriendFinder = document.createElement('button');
   closeFriendFinder.type = 'button';
   closeFriendFinder.className = 'friend-finder-close';
@@ -1074,7 +1107,7 @@ async function showMessages(initialGamerId = null) {
   const searchInput = document.createElement('input');
   searchInput.type = 'search';
   searchInput.placeholder = 'Search gamers by name';
-  searchInput.setAttribute('aria-label', 'Search active gamers by name');
+  searchInput.setAttribute('aria-label', 'Search gamers by name');
   searchInput.autocomplete = 'off';
   const searchButton = document.createElement('button');
   searchButton.type = 'submit';
@@ -1156,31 +1189,24 @@ async function showMessages(initialGamerId = null) {
     const requestId = ++friendSearchRequestId;
     const term = searchInput.value.trim();
     searchResults.replaceChildren();
-    showMessageStatus(
-      searchStatus,
-      activeGamersPresenceStatus === 'error'
-        ? 'Online gamer status is unavailable right now.'
-        : (term ? 'Searching active gamers...' : 'Checking who is online...')
-    );
-    if (activeGamersPresenceStatus === 'error') return;
-    if (activeGamersPresenceStatus === 'connecting') return;
+    showMessageStatus(searchStatus, term ? 'Searching gamers...' : 'Loading gamers...');
 
     try {
-      const profiles = await getMessageContacts(term, [...activeGamerIds]);
+      const profiles = await getMessageContacts(term);
       if (requestId !== friendSearchRequestId
         || thisViewId !== messageViewId
         || searchInput.value.trim() !== term
         || friendFinder.hidden) return;
-      const otherGamersOnline = [...activeGamerIds].some((id) => id !== currentUserId);
       showMessageStatus(
         searchStatus,
         profiles.length
           ? ''
-          : (otherGamersOnline ? 'No active gamers match that name.' : 'No other gamers are online right now.')
+          : (term ? 'No gamers match that name.' : 'No other gamers have joined yet.')
       );
       for (const profile of profiles) {
         const row = document.createElement('div');
         row.className = 'friend-gamer-row';
+        row.classList.toggle('is-online', activeGamerIds.has(profile.id));
         row.appendChild(createMessageAvatar(profile));
         const name = document.createElement('span');
         name.className = 'friend-gamer-name';
@@ -1227,8 +1253,12 @@ async function showMessages(initialGamerId = null) {
         searchResults.appendChild(row);
       }
     } catch (error) {
-      console.error('Unable to search active gamers:', error);
-      showMessageStatus(searchStatus, 'Active gamers could not be loaded. Please try again.', true);
+      console.error('Unable to search gamers:', error);
+      showMessageStatus(
+        searchStatus,
+        'Gamers could not be searched. Check your connection and make sure the latest Supabase schema has been applied.',
+        true
+      );
     }
   }
 
@@ -1394,6 +1424,10 @@ async function showMessages(initialGamerId = null) {
     searchGamers();
     searchInput.focus();
   });
+  closeActiveFriendFinder = () => {
+    friendFinder.hidden = true;
+    friendSearchRequestId += 1;
+  };
   closeFriendFinder.addEventListener('click', () => {
     friendFinder.hidden = true;
     addFriendButton?.focus();
