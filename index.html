@@ -1946,6 +1946,7 @@ img{
 }
 @media (max-width: 680px){
     #app_bar{
+        z-index:40;
         height:56px;
         align-items:center;
         padding:0 14px;
@@ -1968,6 +1969,15 @@ img{
         padding-top:0;
         height:24px;
         width:24px;
+    }
+    #notification-menu .notification-panel{
+        position:fixed;
+        top:calc(64px + env(safe-area-inset-top));
+        right:auto;
+        left:50%;
+        width:min(420px, calc(100vw - 24px));
+        max-height:min(70dvh, 500px);
+        transform:translateX(-50%);
     }
     #circle1{
         margin:0;

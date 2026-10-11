@@ -1035,7 +1035,7 @@ async function showMessages(initialGamerId = null) {
 
   const intro = document.createElement('p');
   intro.className = 'messages-intro';
-  intro.textContent = 'Chat privately with other gamers. Search for a gamer to start a conversation.';
+  intro.textContent = 'Search registered Gamer Studio accounts to add or message gamers. They do not need to be online.';
 
   const layout = document.createElement('div');
   layout.className = 'messages-layout';
@@ -1201,7 +1201,9 @@ async function showMessages(initialGamerId = null) {
         searchStatus,
         profiles.length
           ? ''
-          : (term ? 'No gamers match that name.' : 'No other gamers have joined yet.')
+          : (term
+            ? 'No registered gamers match that name.'
+            : 'No other Gamer Studio accounts are registered yet.')
       );
       for (const profile of profiles) {
         const row = document.createElement('div');
