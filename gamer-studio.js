@@ -408,8 +408,20 @@ if (SLIDER_TRACK && SLIDES.length && SLIDER_INDICATORS) {
           if (article.image) {
             image.src = article.image;
             image.alt = article.title || 'Gaming news';
+            image.loading = 'eager';
+            image.decoding = 'async';
+            image.referrerPolicy = 'no-referrer';
+            image.onerror = () => {
+              console.warn('Gaming news image could not be loaded:', image.currentSrc || image.src);
+              image.hidden = true;
+            };
+            image.onload = () => {
+              image.hidden = false;
+            };
             image.hidden = false;
           } else {
+            image.onerror = null;
+            image.onload = null;
             image.removeAttribute('src');
             image.alt = '';
             image.hidden = true;
@@ -444,6 +456,9 @@ if (SLIDER_TRACK && SLIDES.length && SLIDER_INDICATORS) {
             image.src = article.image;
             image.alt = article.title || 'Gaming news';
             image.loading = 'lazy';
+            image.decoding = 'async';
+            image.referrerPolicy = 'no-referrer';
+            image.addEventListener('error', () => image.remove(), { once: true });
             card.append(image);
           }
 
